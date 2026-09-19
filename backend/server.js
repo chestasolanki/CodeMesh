@@ -10,7 +10,7 @@ import path from "path"
 const app = express()
 const httpServer = createServer(app)
 
-// IMPORTANT: Middleware MUST be at the top before routes
+// Middleware
 app.use(cors())
 app.use(express.static("public"))
 app.use(express.json())
@@ -24,6 +24,63 @@ const io = new Server(httpServer, {
 
 const ySocketIO = new YSocketIO(io)
 ySocketIO.initialize()
+
+// Active Rooms Registry (Map: roomId -> Set of socketIds)
+const activeRooms = new Map()
+
+// API: Create New Room
+app.post('/api/rooms/create', (req, res) => {
+    const { roomId } = req.body || {}
+    if (!roomId) {
+        return res.status(400).json({ error: "Room ID is required" })
+    }
+    if (!activeRooms.has(roomId)) {
+        activeRooms.set(roomId, new Set())
+    }
+    console.log(`[ROOM CREATED] Active Room Code: ${roomId}`)
+    return res.json({ success: true, roomId })
+})
+
+// API: Validate Room Code Before Joining
+app.post('/api/rooms/validate', (req, res) => {
+    const { roomId } = req.body || {}
+    if (!roomId) {
+        return res.status(400).json({ valid: false, message: "Room ID is required" })
+    }
+    const isValid = activeRooms.has(roomId)
+    return res.json({ valid: isValid })
+})
+
+// Socket Room Tracking & Auto-Teardown when empty
+io.on("connection", (socket) => {
+    let currentRoom = null
+
+    socket.on("join-room-tracking", ({ roomId }) => {
+        if (roomId) {
+            currentRoom = roomId
+            socket.join(roomId)
+            if (!activeRooms.has(roomId)) {
+                activeRooms.set(roomId, new Set())
+            }
+            activeRooms.get(roomId).add(socket.id)
+            console.log(`[ROOM TRACKING] Socket ${socket.id} joined room ${roomId}. Active sockets in room: ${activeRooms.get(roomId).size}`)
+        }
+    })
+
+    socket.on("disconnect", () => {
+        if (currentRoom && activeRooms.has(currentRoom)) {
+            const socketSet = activeRooms.get(currentRoom)
+            socketSet.delete(socket.id)
+            console.log(`[ROOM TRACKING] Socket ${socket.id} disconnected from ${currentRoom}. Remaining sockets: ${socketSet.size}`)
+            
+            // Delete room code ONLY when 0 sockets remain in the room
+            if (socketSet.size === 0) {
+                console.log(`[ROOM CLOSED] Room ${currentRoom} is empty (0 users). Room code deleted.`)
+                activeRooms.delete(currentRoom)
+            }
+        }
+    })
+})
 
 // Local C++ Compilation Route
 app.post('/api/compile', (req, res) => {
@@ -54,11 +111,10 @@ app.post('/api/compile', (req, res) => {
                 return res.status(500).json({ error: "Failed to create source file" })
             }
 
-            // 2. Compile C++ code using g++
-            exec(`g++ "${filePath}" -o "${outPath}"`, (compileErr, stdout, stderr) => {
+            // 2. Compile C++ code using g++ (with -I. for local bits/stdc++.h support)
+            exec(`g++ -I. "${filePath}" -o "${outPath}"`, (compileErr, stdout, stderr) => {
                 if (compileErr) {
                     cleanup()
-                    // Send compilation errors (syntax errors) to frontend
                     return res.json({ run: { stderr: stderr || compileErr.message } })
                 }
 
@@ -73,7 +129,6 @@ app.post('/api/compile', (req, res) => {
                         return res.json({ run: { stderr: runStderr || runErr.message } })
                     }
 
-                    // Return standard output
                     return res.json({ run: { stdout: runStdout } })
                 })
             })
@@ -83,9 +138,6 @@ app.post('/api/compile', (req, res) => {
         return res.status(500).json({ error: "Internal Server Error" })
     }
 })
-
-
-
 
 // Serve React Frontend SPA for any unhandled routes (Express 5 compatible)
 app.use((req, res) => {
@@ -100,4 +152,3 @@ app.use((req, res) => {
 httpServer.listen(3000, () => {
     console.log("Server is running on port 3000")
 })
-
