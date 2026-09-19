@@ -37,7 +37,7 @@ const App = () => {
 
   useEffect(() => {
     if (username) {
-      const provider = new SocketIOProvider('http://localhost:3000', 'monaco', ydoc, {
+      const provider = new SocketIOProvider('/', 'monaco', ydoc, {
         autoConnect: true
       })
 
@@ -86,7 +86,8 @@ const App = () => {
     setOutput("Compiling & Running C++ code...")
 
     try {
-      const response = await fetch("http://localhost:3000/api/compile", {
+      const apiBaseUrl = window.location.origin
+      const response = await fetch(`${apiBaseUrl}/api/compile`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: codeToRun })

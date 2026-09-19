@@ -12,6 +12,7 @@ const httpServer = createServer(app)
 
 // IMPORTANT: Middleware MUST be at the top before routes
 app.use(cors())
+app.use(express.static("public"))
 app.use(express.json())
 
 const io = new Server(httpServer, {
@@ -83,10 +84,20 @@ app.post('/api/compile', (req, res) => {
     }
 })
 
-app.get("/", (req, res) => {
-    res.status(200).json({ message: "hello world", success: true })
+
+
+
+// Serve React Frontend SPA for any unhandled routes (Express 5 compatible)
+app.use((req, res) => {
+    const indexPath = path.join(process.cwd(), "public", "index.html")
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath)
+    } else {
+        res.status(404).send("API Server running. Static frontend not found.")
+    }
 })
 
 httpServer.listen(3000, () => {
     console.log("Server is running on port 3000")
 })
+
