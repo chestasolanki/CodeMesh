@@ -47,6 +47,9 @@ const generateRoomCode = () => {
 
 // Helper: Determine Backend Socket.IO URL dynamically
 const getSocketUrl = () => {
+  if (import.meta.env.VITE_BACKEND_URL) {
+    return import.meta.env.VITE_BACKEND_URL
+  }
   if (
     typeof window !== 'undefined' &&
     window.location.hostname === 'localhost' &&
