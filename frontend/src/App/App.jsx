@@ -668,20 +668,6 @@ const App = () => {
                   </button>
                 </form>
               )}
-
-              {/* GENERATE UNIQUE ROOM ID BUTTON (MATCHING SCREENSHOT) */}
-              <div className="mt-4 pt-3 border-t border-emerald-900/40 text-center">
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleGenerateQuickRoomId()
-                    setActiveTab('create')
-                  }}
-                  className="w-full py-2.5 bg-[#05130e] hover:bg-[#081d16] border border-emerald-800/80 rounded-xl text-slate-300 hover:text-emerald-400 text-xs font-semibold transition flex items-center justify-center gap-2"
-                >
-                  <span className="text-emerald-400">✨</span> Generate Unique Room Id
-                </button>
-              </div>
             </div>
 
             {/* FOOTER CAPTION */}
