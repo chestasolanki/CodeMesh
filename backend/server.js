@@ -82,57 +82,107 @@ io.on("connection", (socket) => {
     })
 })
 
-// Local C++ Compilation Route
+// Multi-Language Compilation & Execution Route
 app.post('/api/compile', (req, res) => {
     try {
-        const { code } = req.body || {}
+        const { code, language = 'cpp' } = req.body || {}
 
         if (!code) {
             return res.status(400).json({ error: "No code provided in request body" })
         }
 
-        const id = Date.now()
-        const filePath = path.join(process.cwd(), `temp_${id}.cpp`)
-        const outPath = path.join(process.cwd(), `temp_${id}.out`)
+        const id = Date.now() + '_' + Math.random().toString(36).substring(2, 7)
+        const workDir = path.join(process.cwd(), `temp_${id}`)
+        fs.mkdirSync(workDir, { recursive: true })
 
         const cleanup = () => {
-            if (fs.existsSync(filePath)) {
-                try { fs.unlinkSync(filePath) } catch (e) {}
-            }
-            if (fs.existsSync(outPath)) {
-                try { fs.unlinkSync(outPath) } catch (e) {}
+            try {
+                if (fs.existsSync(workDir)) {
+                    fs.rmSync(workDir, { recursive: true, force: true })
+                }
+            } catch (e) {
+                console.error("Cleanup error:", e)
             }
         }
 
-        // 1. Write code string to file
-        fs.writeFile(filePath, code, (writeErr) => {
-            if (writeErr) {
-                console.error("Write File Error:", writeErr)
-                return res.status(500).json({ error: "Failed to create source file" })
-            }
+        const executeProcess = (runCmd) => {
+            exec(runCmd, { timeout: 7000, cwd: workDir }, (runErr, runStdout, runStderr) => {
+                cleanup()
 
-            // 2. Compile C++ code using g++ (with -I. for local bits/stdc++.h support)
-            exec(`g++ -I. "${filePath}" -o "${outPath}"`, (compileErr, stdout, stderr) => {
-                if (compileErr) {
-                    cleanup()
-                    return res.json({ run: { stderr: stderr || compileErr.message } })
+                if (runErr) {
+                    if (runErr.killed) {
+                        return res.json({ run: { stderr: "Time Limit Exceeded (Execution exceeded 7s limit)" } })
+                    }
+                    return res.json({ run: { stderr: runStderr || runErr.message } })
                 }
 
-                // 3. Make executable and run binary
-                exec(`chmod +x "${outPath}" && "${outPath}"`, { timeout: 5000 }, (runErr, runStdout, runStderr) => {
+                return res.json({ run: { stdout: runStdout || "Program executed successfully with no output." } })
+            })
+        }
+
+        if (language === 'python') {
+            const filePath = path.join(workDir, 'main.py')
+            fs.writeFile(filePath, code, (writeErr) => {
+                if (writeErr) {
                     cleanup()
-
-                    if (runErr) {
-                        if (runErr.killed) {
-                            return res.json({ run: { stderr: "Time Limit Exceeded (Infinite loop)" } })
-                        }
-                        return res.json({ run: { stderr: runStderr || runErr.message } })
+                    return res.status(500).json({ error: "Failed to write Python source file" })
+                }
+                executeProcess(`python3 "${filePath}"`)
+            })
+        } else if (language === 'c') {
+            const filePath = path.join(workDir, 'main.c')
+            const outPath = path.join(workDir, 'main.out')
+            fs.writeFile(filePath, code, (writeErr) => {
+                if (writeErr) {
+                    cleanup()
+                    return res.status(500).json({ error: "Failed to write C source file" })
+                }
+                exec(`gcc -O2 "${filePath}" -o "${outPath}"`, (compileErr, stdout, stderr) => {
+                    if (compileErr) {
+                        cleanup()
+                        return res.json({ run: { stderr: stderr || compileErr.message } })
                     }
-
-                    return res.json({ run: { stdout: runStdout } })
+                    executeProcess(`chmod +x "${outPath}" && "${outPath}"`)
                 })
             })
-        })
+        } else if (language === 'java') {
+            let className = 'Main'
+            const classMatch = code.match(/public\s+class\s+([A-Za-z0-9_]+)/)
+            if (classMatch && classMatch[1]) {
+                className = classMatch[1]
+            }
+            const filePath = path.join(workDir, `${className}.java`)
+            fs.writeFile(filePath, code, (writeErr) => {
+                if (writeErr) {
+                    cleanup()
+                    return res.status(500).json({ error: "Failed to write Java source file" })
+                }
+                exec(`javac -d "${workDir}" "${filePath}"`, (compileErr, stdout, stderr) => {
+                    if (compileErr) {
+                        cleanup()
+                        return res.json({ run: { stderr: stderr || compileErr.message } })
+                    }
+                    executeProcess(`java -cp "${workDir}" "${className}"`)
+                })
+            })
+        } else {
+            // Default: C++
+            const filePath = path.join(workDir, 'main.cpp')
+            const outPath = path.join(workDir, 'main.out')
+            fs.writeFile(filePath, code, (writeErr) => {
+                if (writeErr) {
+                    cleanup()
+                    return res.status(500).json({ error: "Failed to write C++ source file" })
+                }
+                exec(`g++ -O2 -I"${process.cwd()}" "${filePath}" -o "${outPath}"`, (compileErr, stdout, stderr) => {
+                    if (compileErr) {
+                        cleanup()
+                        return res.json({ run: { stderr: stderr || compileErr.message } })
+                    }
+                    executeProcess(`chmod +x "${outPath}" && "${outPath}"`)
+                })
+            })
+        }
     } catch (err) {
         console.error("Unexpected Server Error:", err)
         return res.status(500).json({ error: "Internal Server Error" })

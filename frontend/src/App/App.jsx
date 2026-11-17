@@ -6,8 +6,15 @@ import * as Y from 'yjs'
 import { SocketIOProvider } from 'y-socket.io'
 import { io as ioClient } from 'socket.io-client'
 
-// Default starter C++ code template
-const DEFAULT_CPP_TEMPLATE = `#include <bits/stdc++.h>
+// Supported Languages Configuration
+const SUPPORTED_LANGUAGES = {
+  cpp: {
+    id: 'cpp',
+    name: 'C++ (g++)',
+    fileName: 'main.cpp',
+    monacoLang: 'cpp',
+    badge: 'C++',
+    template: `#include <bits/stdc++.h>
 using namespace std;
 
 int main() {
@@ -15,6 +22,48 @@ int main() {
     return 0;
 }
 `
+  },
+  c: {
+    id: 'c',
+    name: 'C (gcc)',
+    fileName: 'main.c',
+    monacoLang: 'c',
+    badge: 'C',
+    template: `#include <stdio.h>
+
+int main() {
+    printf("Hello from C!\\n");
+    return 0;
+}
+`
+  },
+  python: {
+    id: 'python',
+    name: 'Python 3',
+    fileName: 'main.py',
+    monacoLang: 'python',
+    badge: 'PY',
+    template: `def main():
+    print("Hello from Python!")
+
+if __name__ == "__main__":
+    main()
+`
+  },
+  java: {
+    id: 'java',
+    name: 'Java (OpenJDK 17)',
+    fileName: 'Main.java',
+    monacoLang: 'java',
+    badge: 'JAVA',
+    template: `public class Main {
+    public static void main(String[] args) {
+        System.out.println("Hello from Java!");
+    }
+}
+`
+  }
+}
 
 // Helper: Generate colorful avatar backgrounds based on username
 const AVATAR_COLORS = [
@@ -75,6 +124,7 @@ const App = () => {
   const searchParams = new URLSearchParams(window.location.search)
   const initialRoomFromUrl = searchParams.get('room') || ''
   const initialUserFromUrl = searchParams.get('username') || ''
+  const initialLangFromUrl = searchParams.get('lang') || 'cpp'
 
   const [username, setUsername] = useState(initialUserFromUrl)
   const [roomId, setRoomId] = useState(initialRoomFromUrl)
@@ -103,7 +153,13 @@ const App = () => {
   const [activeNav, setActiveNav] = useState('all')
   const [activeBottomTab, setActiveBottomTab] = useState('terminal')
 
+  // Selected language state ('cpp' | 'c' | 'python' | 'java')
+  const [selectedLanguage, setSelectedLanguage] = useState(
+    SUPPORTED_LANGUAGES[initialLangFromUrl] ? initialLangFromUrl : 'cpp'
+  )
+
   const editorRef = useRef(null)
+  const monacoRef = useRef(null)
   const bindingRef = useRef(null)
   const providerRef = useRef(null)
   const trackingSocketRef = useRef(null)
@@ -116,6 +172,46 @@ const App = () => {
   const ydoc = useMemo(() => new Y.Doc(), [])
   const yText = useMemo(() => ydoc.getText('monaco'), [ydoc])
   const yChatArray = useMemo(() => ydoc.getArray('chat-messages'), [ydoc])
+  const yMetaMap = useMemo(() => ydoc.getMap('room-meta'), [ydoc])
+
+  // Synchronize room language across all participants
+  useEffect(() => {
+    const updateLang = () => {
+      const roomLang = yMetaMap.get('language')
+      if (roomLang && SUPPORTED_LANGUAGES[roomLang]) {
+        setSelectedLanguage(roomLang)
+      }
+    }
+    updateLang()
+    yMetaMap.observe(updateLang)
+    return () => {
+      yMetaMap.unobserve(updateLang)
+    }
+  }, [yMetaMap])
+
+  // Update Monaco syntax language model dynamically when language changes
+  useEffect(() => {
+    if (editorRef.current && monacoRef.current && editorRef.current.getModel()) {
+      const targetLang = SUPPORTED_LANGUAGES[selectedLanguage]?.monacoLang || 'cpp'
+      monacoRef.current.editor.setModelLanguage(editorRef.current.getModel(), targetLang)
+    }
+  }, [selectedLanguage])
+
+  // Language change handler
+  const handleLanguageChange = (newLang) => {
+    if (!SUPPORTED_LANGUAGES[newLang]) return
+    setSelectedLanguage(newLang)
+    yMetaMap.set('language', newLang)
+
+    // If editor has only blank text, insert starter template
+    if (editorRef.current && !editorRef.current.getValue().trim()) {
+      const template = SUPPORTED_LANGUAGES[newLang]?.template || ''
+      if (template) {
+        yText.delete(0, yText.length)
+        yText.insert(0, template)
+      }
+    }
+  }
 
   // Sync Y.Array chat messages to React local state
   useEffect(() => {
@@ -134,8 +230,9 @@ const App = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages])
 
-  const handleMount = (editor) => {
+  const handleMount = (editor, monaco) => {
     editorRef.current = editor
+    monacoRef.current = monaco
 
     if (bindingRef.current) {
       try {
@@ -180,6 +277,17 @@ const App = () => {
         isHost,
         avatarColor: userAvatarColor
       })
+
+      // If host, register chosen language in Yjs room metadata and set starter template
+      if (isHost) {
+        yMetaMap.set('language', selectedLanguage)
+        if (yText.length === 0) {
+          const starterTmpl = SUPPORTED_LANGUAGES[selectedLanguage]?.template || ''
+          if (starterTmpl) {
+            yText.insert(0, starterTmpl)
+          }
+        }
+      }
 
       // Update user list with active and inactive (offline) statuses
       const updateUsersList = () => {
@@ -281,14 +389,15 @@ const App = () => {
     setMessageInput('')
   }
 
-  // C++ Code Execution Handler
+  // Multi-Language Code Execution Handler
   const handleRunCode = async () => {
     if (!editorRef.current) return
 
     const codeToRun = editorRef.current.getValue()
+    const activeLangConfig = SUPPORTED_LANGUAGES[selectedLanguage] || SUPPORTED_LANGUAGES.cpp
 
     setIsLoading(true)
-    setOutput('> Build started...\n')
+    setOutput(`> Compiling and running ${activeLangConfig.name}...\n`)
 
     const startTime = performance.now()
 
@@ -297,7 +406,10 @@ const App = () => {
       const response = await fetch(`${apiBaseUrl}/api/compile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: codeToRun })
+        body: JSON.stringify({ 
+          code: codeToRun,
+          language: selectedLanguage
+        })
       })
 
       const data = await response.json()
@@ -305,13 +417,13 @@ const App = () => {
 
       if (data.run) {
         if (data.run.stderr) {
-          setOutput(`> Build started...\n> Compilation output:\n${data.run.stderr}\n\n[Program finished in ${duration}s]`)
+          setOutput(`> ${activeLangConfig.name} output:\n${data.run.stderr}\n\n[Finished in ${duration}s]`)
         } else {
           const runResult = data.run.stdout || 'Program executed successfully with no output.'
-          setOutput(`> Build started...\n> Build successful (${duration}s)\n\n${runResult}\n[Program finished in ${duration}s]`)
+          setOutput(`> ${activeLangConfig.name} executed successfully (${duration}s)\n\n${runResult}\n[Finished in ${duration}s]`)
         }
       } else {
-        setOutput(`> Build failed.\n${data.message || 'Execution error.'}`)
+        setOutput(`> Execution failed.\n${data.error || data.message || 'Server error.'}`)
       }
     } catch (error) {
       setOutput('> Error connecting to backend execution server.')
@@ -343,7 +455,7 @@ const App = () => {
         setUsername(createFormName.trim())
         setRoomId(newCode)
         setIsHost(true)
-        window.history.pushState({}, '', `?room=${newCode}&username=${encodeURIComponent(createFormName.trim())}`)
+        window.history.pushState({}, '', `?room=${newCode}&username=${encodeURIComponent(createFormName.trim())}&lang=${selectedLanguage}`)
       } else {
         setFormError('Failed to register room on server. Try again.')
       }
@@ -376,7 +488,7 @@ const App = () => {
         setUsername(joinFormName.trim())
         setRoomId(formattedCode)
         setIsHost(false)
-        window.history.pushState({}, '', `?room=${formattedCode}&username=${encodeURIComponent(joinFormName.trim())}`)
+        window.history.pushState({}, '', `?room=${formattedCode}&username=${encodeURIComponent(joinFormName.trim())}&lang=${selectedLanguage}`)
       } else {
         setFormError('❌ Invalid Room Code. This room does not exist or has been closed.')
       }
@@ -571,36 +683,89 @@ const App = () => {
 
             {/* MAIN FORM CARD */}
             <div className="w-full bg-[#0a1e16]/80 border border-emerald-900/60 rounded-2xl p-6 shadow-2xl backdrop-blur-md mt-4">
-              {/* MODE SELECTOR TABS */}
-              <div className="grid grid-cols-2 gap-2 bg-[#05130e] p-1 rounded-xl border border-emerald-900/50 mb-5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab('join')
-                    setFormError('')
-                  }}
-                  className={`py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-                    activeTab === 'join'
-                      ? 'bg-[#00c985] text-slate-950 shadow-md'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <span>👤+</span> Join Room
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab('create')
-                    setFormError('')
-                  }}
-                  className={`py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
-                    activeTab === 'create'
-                      ? 'bg-[#00c985] text-slate-950 shadow-md'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <span>+</span> Create Room
-                </button>
+              {/* 1. SELECT LANGUAGE (STEP 1) */}
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <span>1.</span> Select Language
+                  </span>
+                  <span className="text-[10px] text-emerald-400 font-mono font-semibold">
+                    {SUPPORTED_LANGUAGES[selectedLanguage]?.name}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.values(SUPPORTED_LANGUAGES).map((lang) => {
+                    const isSelected = selectedLanguage === lang.id
+                    return (
+                      <button
+                        key={lang.id}
+                        type="button"
+                        onClick={() => setSelectedLanguage(lang.id)}
+                        className={`p-2 rounded-xl border text-left transition-all flex items-center gap-2 ${
+                          isSelected
+                            ? 'bg-[#00c985]/15 border-[#00c985] text-white ring-1 ring-[#00c985] shadow-md shadow-emerald-950/40'
+                            : 'bg-[#05130e] border-emerald-900/60 text-slate-400 hover:text-slate-200 hover:border-emerald-700/60'
+                        }`}
+                      >
+                        <span
+                          className={`w-6 h-6 rounded-lg flex items-center justify-center font-bold text-[11px] shrink-0 transition ${
+                            isSelected
+                              ? 'bg-[#00c985] text-slate-950 shadow'
+                              : 'bg-[#0b241a] text-emerald-400 border border-emerald-800/40'
+                          }`}
+                        >
+                          {lang.badge}
+                        </span>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-semibold truncate leading-tight">
+                            {lang.name}
+                          </span>
+                          <span className="text-[9px] text-slate-500 font-mono truncate">
+                            {lang.fileName}
+                          </span>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* 2. MODE SELECTOR TABS (STEP 2) */}
+              <div className="mb-4">
+                <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block mb-2">
+                  2. Room Action
+                </span>
+                <div className="grid grid-cols-2 gap-2 bg-[#05130e] p-1 rounded-xl border border-emerald-900/50">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('join')
+                      setFormError('')
+                    }}
+                    className={`py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                      activeTab === 'join'
+                        ? 'bg-[#00c985] text-slate-950 shadow-md'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <span>👤+</span> Join Room
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('create')
+                      setFormError('')
+                    }}
+                    className={`py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                      activeTab === 'create'
+                        ? 'bg-[#00c985] text-slate-950 shadow-md'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <span>+</span> Create Room
+                  </button>
+                </div>
               </div>
 
               {/* FORM ERROR BANNER */}
@@ -705,7 +870,7 @@ const App = () => {
           <div className="flex items-center gap-2 font-mono text-[11px] text-[#969696]">
             <span className="text-[#007acc] font-bold">&lt;/&gt; CodeMesh</span>
             <span>-</span>
-            <span className="text-[#cccccc]">main.cpp</span>
+            <span className="text-[#cccccc]">{SUPPORTED_LANGUAGES[selectedLanguage]?.fileName || 'main.cpp'}</span>
             <span className="bg-[#2d2d2d] px-1.5 py-0.5 rounded text-[10px] text-[#00c985] font-mono border border-[#3c3c3c]">
               Room: {roomId}
             </span>
@@ -714,7 +879,7 @@ const App = () => {
 
         {/* Center: Search / File Breadcrumb */}
         <div className="hidden md:flex items-center justify-center bg-[#2b2b2b] border border-[#3c3c3c] rounded px-8 py-0.5 text-[11px] text-[#858585]">
-          <span>CodeMesh WorkSpace — main.cpp</span>
+          <span>CodeMesh WorkSpace — {SUPPORTED_LANGUAGES[selectedLanguage]?.fileName || 'main.cpp'}</span>
         </div>
 
         {/* Right: Quick Actions (Run Code, Copy Room, Leave) */}
@@ -723,7 +888,7 @@ const App = () => {
             onClick={handleRunCode}
             disabled={isLoading}
             className="bg-[#238636] hover:bg-[#2ea043] disabled:opacity-50 text-white font-semibold px-3 py-1 rounded text-[11px] transition shadow flex items-center gap-1.5"
-            title="Compile & Run C++ Code (⌘+R)"
+            title={`Compile & Run ${SUPPORTED_LANGUAGES[selectedLanguage]?.name || 'Code'} (⌘+R)`}
           >
             <span className="text-xs">▶</span>
             <span>{isLoading ? 'Running...' : 'Run Code'}</span>
@@ -867,8 +1032,10 @@ const App = () => {
                     WORKSPACE FILES
                   </span>
                   <div className="flex items-center gap-2 bg-[#2d2d2d] text-white px-2.5 py-1.5 rounded text-xs font-mono border-l-2 border-[#007acc]">
-                    <span className="text-[#00c985] font-bold text-xs">C++</span>
-                    <span>main.cpp</span>
+                    <span className="text-[#00c985] font-bold text-xs">
+                      {SUPPORTED_LANGUAGES[selectedLanguage]?.badge || 'C++'}
+                    </span>
+                    <span>{SUPPORTED_LANGUAGES[selectedLanguage]?.fileName || 'main.cpp'}</span>
                     <span className="ml-auto text-[10px] text-[#858585]">active</span>
                   </div>
                 </div>
@@ -993,16 +1160,33 @@ const App = () => {
           <div className="h-9 bg-[#252526] border-b border-[#2b2b2b] flex items-center justify-between px-2">
             <div className="flex items-center">
               <div className="h-9 bg-[#1e1e1e] border-t-2 border-[#007acc] border-r border-[#2b2b2b] px-3.5 flex items-center gap-2 text-xs font-mono text-white">
-                <span className="text-[#00c985] font-bold">C++</span>
-                <span>main.cpp</span>
+                <span className="text-[#00c985] font-bold">
+                  {SUPPORTED_LANGUAGES[selectedLanguage]?.badge || 'C++'}
+                </span>
+                <span>{SUPPORTED_LANGUAGES[selectedLanguage]?.fileName || 'main.cpp'}</span>
                 <span className="text-[#858585] text-[11px] hover:text-white cursor-pointer ml-1">
                   ✕
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 text-xs text-[#858585] font-mono pr-2">
-              <span>C++ (g++)</span>
+            {/* Language Selector Dropdown */}
+            <div className="flex items-center gap-2 pr-2">
+              <label htmlFor="language-select" className="text-[11px] text-[#858585] font-mono hidden sm:inline">
+                Language:
+              </label>
+              <select
+                id="language-select"
+                value={selectedLanguage}
+                onChange={(e) => handleLanguageChange(e.target.value)}
+                className="bg-[#1e1e1e] text-[#cccccc] text-xs font-mono border border-[#3c3c3c] rounded px-2.5 py-1 focus:outline-none focus:border-[#007acc] transition cursor-pointer"
+              >
+                {Object.values(SUPPORTED_LANGUAGES).map((lang) => (
+                  <option key={lang.id} value={lang.id}>
+                    {lang.name}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -1010,16 +1194,14 @@ const App = () => {
           <div className="h-6 bg-[#1e1e1e] border-b border-[#2b2b2b] px-4 flex items-center text-[11px] text-[#858585] font-mono gap-1">
             <span>src</span>
             <span>&gt;</span>
-            <span className="text-[#cccccc]">main.cpp</span>
-            <span>&gt;</span>
-            <span className="text-[#9cdcfe]">main()</span>
+            <span className="text-[#cccccc]">{SUPPORTED_LANGUAGES[selectedLanguage]?.fileName || 'main.cpp'}</span>
           </div>
 
           {/* MONACO EDITOR COMPONENT */}
           <div className="flex-1 overflow-hidden relative">
             <Editor
               height="100%"
-              defaultLanguage="cpp"
+              language={SUPPORTED_LANGUAGES[selectedLanguage]?.monacoLang || 'cpp'}
               defaultValue=""
               theme="vs-dark"
               onMount={handleMount}
@@ -1081,10 +1263,13 @@ const App = () => {
             {/* Terminal Body */}
             <div className="flex-1 p-3 overflow-y-auto bg-[#1e1e1e] text-[#cccccc] font-mono leading-relaxed text-xs">
               <div className="text-[#007acc] font-bold mb-1">
-                codemesh@studio:~/room-{roomId}$ g++ -O2 main.cpp -o main &amp;&amp; ./main
+                {selectedLanguage === 'python' && `codemesh@studio:~/room-${roomId}$ python3 main.py`}
+                {selectedLanguage === 'c' && `codemesh@studio:~/room-${roomId}$ gcc -O2 main.c -o main && ./main`}
+                {selectedLanguage === 'java' && `codemesh@studio:~/room-${roomId}$ javac Main.java && java Main`}
+                {selectedLanguage === 'cpp' && `codemesh@studio:~/room-${roomId}$ g++ -O2 main.cpp -o main && ./main`}
               </div>
               <pre className="text-[#4ec9b0] whitespace-pre-wrap font-mono">
-                {output || 'Press "▶ Run Code" (or ⌘+R) to compile and execute your C++ program.'}
+                {output || `Press "▶ Run Code" (or ⌘+R) to compile and execute your ${SUPPORTED_LANGUAGES[selectedLanguage]?.name || selectedLanguage} program.`}
               </pre>
             </div>
           </div>
@@ -1107,7 +1292,7 @@ const App = () => {
           <span>Ln 1, Col 1</span>
           <span>Spaces: 4</span>
           <span>UTF-8</span>
-          <span>C++ (g++)</span>
+          <span>{SUPPORTED_LANGUAGES[selectedLanguage]?.name || 'C++ (g++)'}</span>
           <span className="bg-black/20 px-1.5 py-0.2 rounded">
             👥 {activeUsersCount} Online
           </span>

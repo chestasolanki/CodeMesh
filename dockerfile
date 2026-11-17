@@ -13,12 +13,21 @@ COPY frontend/ ./
 RUN npm run build
 
 # ==========================================
-# Stage 2: Production Runtime (Node + g++)
+# Stage 2: Production Runtime (Node + GCC/G++ + Python3 + OpenJDK)
 # ==========================================
 FROM node:20-alpine AS runner
 
-# Install g++ compiler & build tools for C++ execution
-RUN apk add --no-cache g++ build-base
+# Install gcc, g++, build-base, python3, and OpenJDK 17
+RUN apk add --no-cache \
+    build-base \
+    gcc \
+    g++ \
+    python3 \
+    openjdk17-jdk
+
+# Set Java environment variables
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ENV PATH="$JAVA_HOME/bin:${PATH}"
 
 WORKDIR /app
 
